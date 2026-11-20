@@ -1,0 +1,8 @@
+{
+  "agentModels": {
+    "circe-model": { "model": "deepseek-v4-pro" }
+  },
+  "agentRouting": {
+    "circe": "circe-model"
+  }
+}
