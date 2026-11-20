@@ -15,8 +15,13 @@
       "expo-secure-store",
       [
         "expo-build-properties",
-        { "android": { "usesCleartextTraffic": true } }
-      ]
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "expo-asset"
     ]
   }
 }
