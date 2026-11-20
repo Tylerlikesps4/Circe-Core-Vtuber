@@ -9,6 +9,7 @@ import type { GoalTracker } from "./goals.js";
 import type { ViewerRegistry, ViewerTier } from "./viewers.js";
 import type { VoiceChatStatus } from "./voicechat.js";
 import { dashboardHtml } from "./dashboard.js";
+import { classifyMarker } from "./expression.js";
 
 export interface ChatMessage {
   user: string;
@@ -108,6 +109,7 @@ function safeDecode(str: string): string {
  *   POST /ask      -> { message, reflect?, tools?, stream? } — brain answer through the reply pipeline
  *   POST /remember -> { text, tags? } � store an episodic memory
  *   POST /recap    -> distill the session into episodic memory
+ *   POST /cue      -> { marker } — fire an expression cue (e.g. "giggles") on the bus
  */
 export class StreamContextFeed {
   port: number;
@@ -379,6 +381,7 @@ export class StreamContextFeed {
     } else if (
       method === "POST" &&
       (path === "/chat" ||
+        path === "/cue" ||
         path === "/game" ||
         path === "/metrics" ||
         path === "/reply" ||
@@ -428,6 +431,18 @@ export class StreamContextFeed {
         return;
       }
       this.sendJson(res, 200, { ok: true, message: this.pushChat(user, message) });
+      return;
+    }
+
+    if (path === "/cue") {
+      const raw = typeof data.marker === "string" ? data.marker.replace(/\*/g, "").trim() : "";
+      if (!raw || raw.length > 80) {
+        this.sendJson(res, 400, { ok: false, error: "marker required (1-80 chars)" });
+        return;
+      }
+      const cue = classifyMarker(raw);
+      this.bus.emit("expression", { ...cue, source: "remote" });
+      this.sendJson(res, 200, { ok: true, cue });
       return;
     }
 

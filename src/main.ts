@@ -26,7 +26,8 @@ const voiceChatMinGapMs = Math.max(0, Number(process.env.CIRCE_VOICECHAT_MIN_GAP
 const personaId = process.env.CIRCE_PERSONA;
 
 const runtime = new CirceRuntime({
-  port: 8788,
+  port: Number(process.env.CIRCE_PORT) || 8788,
+  host: process.env.CIRCE_HOST || undefined,
   logFile: "logs/circe-events.jsonl",
   persona: personaId ?? undefined,
   vtube: vtubeToken ? { authToken: vtubeToken } : undefined,

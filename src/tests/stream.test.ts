@@ -580,3 +580,27 @@ test("GET /viewers and POST /viewers/:user manage chatter relationship profiles"
 });
 
 
+
+test("POST /cue emits an expression cue on the bus", async () => {
+  const bus = new EventBus();
+  const feed = new StreamContextFeed(bus, { port: 0 });
+  await feed.start();
+  try {
+    const base = `http://127.0.0.1:${feed.port}`;
+    const ok = await fetch(`${base}/cue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ marker: "*giggles*" }),
+    });
+    assert.equal(ok.status, 200);
+    const body = (await ok.json()) as { ok: boolean; cue: { expression: string } };
+    assert.equal(body.cue.expression, "joy");
+    const events = bus.since(0).filter((e) => e.type === "expression");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].marker, "giggles");
+    const bad = await fetch(`${base}/cue`, { method: "POST", body: "{}" });
+    assert.equal(bad.status, 400);
+  } finally {
+    await feed.stop();
+  }
+});
