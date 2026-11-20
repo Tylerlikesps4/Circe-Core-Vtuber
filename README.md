@@ -127,6 +127,36 @@ synthesized audio through the host speakers when synthesis finishes
 `paplay`/`aplay`/`ffplay` on Linux). Audio files are written to `media/`
 (configurable via `{ outDir }`).
 
+#### Env config & the `/tts` speech gateway (phone neural voice)
+
+`npm start` reads the TTS backend from the environment:
+
+| Var | Meaning |
+| --- | --- |
+| `CIRCE_TTS` | `edge-tts` \| `piper` \| `espeak` \| `http` \| `none` (default none) |
+| `CIRCE_TTS_VOICE` | voice / model, e.g. `en-US-AriaNeural`, `en-GB-SoniaNeural`, or a Piper `.onnx` path |
+| `CIRCE_TTS_PLAY` | `0` to stop playing on the PC speakers (phone-only audio) |
+| `CIRCE_TTS_URL` | URL for the `http` backend |
+
+The gateway exposes `POST /tts {"text": "...", "voice"?: "..."}` and
+`GET /tts?text=...&voice=...`. It synthesizes with the configured backend and
+returns the audio bytes (`audio/mpeg` for edge-tts, `audio/wav` for
+piper/espeak). Errors are JSON: `400` empty/invalid text or more than 1000 chars,
+`503` gateway disabled, `501` backend can't produce audio (`none`/`http`),
+`502` synthesis failed. Requests are serialized.
+
+Best voice (free, needs internet): `pip install edge-tts`, then
+
+```powershell
+$env:CIRCE_HOST="0.0.0.0"; $env:CIRCE_TTS="edge-tts"; $env:CIRCE_TTS_VOICE="en-US-AriaNeural"; npm start
+```
+
+(or `en-GB-SoniaNeural`, `en-US-JennyNeural`; `edge-tts --list-voices` for more).
+Offline: install [Piper](https://github.com/rhasspy/piper), download a voice such
+as `en_US-amy-medium.onnx` (+ `.json`), and set `CIRCE_TTS=piper`,
+`CIRCE_TTS_VOICE=C:\path\en_US-amy-medium.onnx`. Check it from the PC with
+`curl "http://localhost:8788/tts?text=hello" -o hi.mp3`.
+
 ### Stream-context feed (`src/stream.ts`)
 
 A zero-dependency HTTP/SSE gateway that ingests the live scene so Circe can react to it:

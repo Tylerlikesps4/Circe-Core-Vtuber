@@ -1,6 +1,8 @@
 import { EventBus } from "./bus.js";
 import { parseReply, ParsedReply, AnimationCue } from "./expression.js";
-import { speak, TtsOptions, TtsResult } from "./tts.js";
+import { speak, audioContentType, TtsOptions, TtsResult } from "./tts.js";
+import { readFileSync } from "node:fs";
+import type { TtsAudio } from "./stream.js";
 import { StreamContextFeed } from "./stream.js";
 import { ManaPool, ManaPoolOptions, ManaSnapshot } from "./manametry.js";
 import { VtubeStudioDriver, VtubeStudioOptions } from "./vtube.js";
@@ -246,6 +248,7 @@ export class CirceRuntime {
       onReply: (text) => this.processReply(text),
       onRecap: () => this.recap({ store: true }),
       onGoalAdvance: (reason) => this.advanceGoalStep(reason),
+      onTts: (text, voice) => this.synthesizeForGateway(text, voice),
       ...(this.gamer ? { onGameStep: () => this.gamer?.tick() } : {}),
       ...(this.brain
         ? {
@@ -359,6 +362,38 @@ export class CirceRuntime {
         }
       }
     });
+  }
+
+  private ttsGatewayQueue: Promise<unknown> = Promise.resolve();
+
+  /**
+   * POST /tts: synthesize `text` with the configured backend into a file
+   * (never played on the host) and return its bytes. Requests are serialized
+   * so concurrent calls never clobber the shared output file.
+   */
+  synthesizeForGateway(text: string, voice?: string): Promise<TtsAudio> {
+    const run = async (): Promise<TtsAudio> => {
+      const backend = this.ttsOptions.backend ?? "none";
+      if (backend === "none" || backend === "http") {
+        return { error: `tts backend "${backend}" cannot return audio; set CIRCE_TTS=edge-tts|piper|espeak`, status: 501 };
+      }
+      const result = await speak(text, {
+        ...this.ttsOptions,
+        ...(voice ? { voice } : {}),
+        fileOnly: true,
+        fileBase: "circe-gateway",
+        outDir: this.ttsOptions.outDir ?? "media",
+      });
+      if (!result.ok || !result.file) return { error: result.detail ?? "synthesis failed", status: 502 };
+      try {
+        return { audio: readFileSync(result.file), contentType: audioContentType(result.file) };
+      } catch (err) {
+        return { error: (err as Error).message, status: 502 };
+      }
+    };
+    const next = this.ttsGatewayQueue.then(run, run);
+    this.ttsGatewayQueue = next.catch(() => undefined);
+    return next;
   }
 
   async processReply(reply: string): Promise<ProcessedReply> {

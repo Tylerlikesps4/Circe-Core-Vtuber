@@ -29,6 +29,16 @@ const runtime = new CirceRuntime({
   port: Number(process.env.CIRCE_PORT) || 8788,
   host: process.env.CIRCE_HOST || undefined,
   logFile: "logs/circe-events.jsonl",
+  ...(process.env.CIRCE_TTS
+    ? {
+        tts: {
+          backend: process.env.CIRCE_TTS as "none" | "espeak" | "edge-tts" | "piper" | "http",
+          ...(process.env.CIRCE_TTS_VOICE ? { voice: process.env.CIRCE_TTS_VOICE } : {}),
+          ...(process.env.CIRCE_TTS_URL ? { httpUrl: process.env.CIRCE_TTS_URL } : {}),
+          play: process.env.CIRCE_TTS_PLAY !== "0",
+        },
+      }
+    : {}),
   persona: personaId ?? undefined,
   vtube: vtubeToken ? { authToken: vtubeToken } : undefined,
   twitch: twitchChannels.length > 0 ? { channels: twitchChannels } : undefined,

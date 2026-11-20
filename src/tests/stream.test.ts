@@ -604,3 +604,68 @@ test("POST /cue emits an expression cue on the bus", async () => {
     await feed.stop();
   }
 });
+
+test("POST /tts returns audio bytes and rejects bad input", async () => {
+  const calls: Array<{ text: string; voice?: string }> = [];
+  const feed = new StreamContextFeed(new EventBus(), {
+    port: 0,
+    maxTtsChars: 20,
+    onTts: async (text, voice) => {
+      calls.push({ text, voice });
+      return { audio: Buffer.from("RIFFfake"), contentType: "audio/wav" };
+    },
+  });
+  await feed.start();
+  try {
+    const base = `http://127.0.0.1:${feed.port}`;
+    const ok = await fetch(`${base}/tts`, {
+      method: "POST",
+      body: JSON.stringify({ text: " Hello there. ", voice: "en-US-AriaNeural" }),
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get("content-type"), "audio/wav");
+    assert.equal(Buffer.from(await ok.arrayBuffer()).toString(), "RIFFfake");
+    assert.deepEqual(calls[0], { text: "Hello there.", voice: "en-US-AriaNeural" });
+
+    for (const body of ["{bad", JSON.stringify({}), JSON.stringify({ text: "   " }), JSON.stringify({ text: "x".repeat(21) })]) {
+      const r = await fetch(`${base}/tts`, { method: "POST", body });
+      assert.equal(r.status, 400, body);
+      await r.text();
+    }
+    assert.equal(calls.length, 1);
+
+    const get = await fetch(`${base}/tts?text=${encodeURIComponent("Hi you")}&voice=bad%20voice!`);
+    assert.equal(get.status, 200);
+    await get.arrayBuffer();
+    assert.deepEqual(calls[1], { text: "Hi you", voice: undefined });
+    const getBad = await fetch(`${base}/tts`);
+    assert.equal(getBad.status, 400);
+    await getBad.text();
+  } finally {
+    await feed.stop();
+  }
+});
+
+test("POST /tts is 503 without a gateway and passes synth errors through", async () => {
+  const off = new StreamContextFeed(new EventBus(), { port: 0 });
+  await off.start();
+  try {
+    const r = await fetch(`http://127.0.0.1:${off.port}/tts`, { method: "POST", body: '{"text":"hi"}' });
+    assert.equal(r.status, 503);
+    await r.text();
+  } finally {
+    await off.stop();
+  }
+  const bad = new StreamContextFeed(new EventBus(), {
+    port: 0,
+    onTts: async () => ({ error: "no backend", status: 501 }),
+  });
+  await bad.start();
+  try {
+    const r = await fetch(`http://127.0.0.1:${bad.port}/tts`, { method: "POST", body: '{"text":"hi"}' });
+    assert.equal(r.status, 501);
+    assert.equal(((await r.json()) as { error: string }).error, "no backend");
+  } finally {
+    await bad.stop();
+  }
+});

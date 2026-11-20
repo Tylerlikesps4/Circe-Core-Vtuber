@@ -57,7 +57,16 @@ export interface StreamFeedOptions {
   voiceChat?: () => VoiceChatStatus | null;
   /** Two-hander mode: enables POST /duet (Circe + partner persona trade lines). */
   onDuet?: (topic: string, opts: DuetRequestOptions) => Promise<unknown>;
+  /**
+   * Speech gateway: enables POST /tts {text, voice?}. Returns the synthesized
+   * audio bytes + content-type, or an error string when synthesis failed.
+   */
+  onTts?: (text: string, voice?: string) => Promise<TtsAudio>;
+  /** Max characters accepted by POST /tts (default 1000). */
+  maxTtsChars?: number;
 }
+
+export type TtsAudio = { audio: Buffer; contentType: string } | { error: string; status?: number };
 
 export interface DuetRequestOptions {
   /** Partner persona id (defaults to Evil Neuro at the runtime layer). */
@@ -135,6 +144,8 @@ export class StreamContextFeed {
   private readonly onGameStep: (() => Promise<unknown> | unknown) | null;
   private readonly voiceChat: (() => VoiceChatStatus | null) | null;
   private readonly onDuet: ((topic: string, opts: DuetRequestOptions) => Promise<unknown>) | null;
+  private readonly onTts: ((text: string, voice?: string) => Promise<TtsAudio>) | null;
+  private readonly maxTtsChars: number;
   private params: Record<string, number> = {};
   private face: Record<string, unknown> | null = null;
 
@@ -155,6 +166,8 @@ export class StreamContextFeed {
     this.onGameStep = options.onGameStep ?? null;
     this.voiceChat = options.voiceChat ?? null;
     this.onDuet = options.onDuet ?? null;
+    this.onTts = options.onTts ?? null;
+    this.maxTtsChars = options.maxTtsChars ?? 1000;
     this.bus.on((event) => this.broadcast(event));
     this.bus.on((event) => {
       if (event.type === "vtube-param" && typeof event.name === "string") {
@@ -378,6 +391,14 @@ export class StreamContextFeed {
       } else {
         this.sendJson(res, 200, { ok: true, ...status });
       }
+    } else if (method === "POST" && path === "/tts") {
+      await this.handleTts(req, res);
+    } else if (method === "GET" && path === "/tts") {
+      // GET form so media players can stream it directly: /tts?text=...&voice=...
+      await this.synthTts(res, {
+        text: url.searchParams.get("text") ?? undefined,
+        voice: url.searchParams.get("voice") ?? undefined,
+      });
     } else if (
       method === "POST" &&
       (path === "/chat" ||
@@ -675,6 +696,54 @@ export class StreamContextFeed {
 
   private broadcast(event: CirceEvent): void {
     for (const client of this.clients) this.writeEvent(client, event);
+  }
+
+  private async handleTts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      this.sendJson(res, 413, { ok: false, error: (err as Error).message });
+      return;
+    }
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      this.sendJson(res, 400, { ok: false, error: "invalid json" });
+      return;
+    }
+    await this.synthTts(res, data ?? {});
+  }
+
+  private async synthTts(res: ServerResponse, data: Record<string, unknown>): Promise<void> {
+    if (!this.onTts) {
+      this.sendJson(res, 503, { ok: false, error: "tts gateway not enabled" });
+      return;
+    }
+    const text = typeof data?.text === "string" ? data.text.trim() : "";
+    if (!text) {
+      this.sendJson(res, 400, { ok: false, error: "text is required" });
+      return;
+    }
+    if (text.length > this.maxTtsChars) {
+      this.sendJson(res, 400, { ok: false, error: `text exceeds ${this.maxTtsChars} chars` });
+      return;
+    }
+    const voice =
+      typeof data.voice === "string" && /^[\w.:-]{1,80}$/.test(data.voice) ? data.voice : undefined;
+    const out = await this.onTts(text, voice);
+    if ("error" in out) {
+      this.sendJson(res, out.status ?? 502, { ok: false, error: out.error });
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": out.contentType,
+      "content-length": out.audio.length,
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+    });
+    res.end(out.audio);
   }
 
   private readBody(req: IncomingMessage): Promise<string> {

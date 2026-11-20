@@ -15,6 +15,10 @@ export interface TtsOptions {
   play?: boolean;
   /** Directory for synthesized audio files (created on demand). */
   outDir?: string;
+  /** Always write an audio file (espeak included) and never play it. Used by the /tts gateway. */
+  fileOnly?: boolean;
+  /** Override the output file base name (without extension). */
+  fileBase?: string;
 }
 
 export interface TtsResult {
@@ -60,7 +64,9 @@ export async function speak(text: string, options: TtsOptions = {}): Promise<Tts
   const trimmed = text.trim();
   if (!trimmed) return { ok: true, backend, text, detail: "empty" };
 
-  const play = options.play ?? false;
+  const fileOnly = options.fileOnly ?? false;
+  const play = fileOnly ? false : options.play ?? false;
+  const base = (name: string) => options.fileBase ?? name;
   const outDir = options.outDir ?? "media";
   let result: ProcResult;
   let audioFile: string | null = null;
@@ -70,9 +76,9 @@ export async function speak(text: string, options: TtsOptions = {}): Promise<Tts
       result = { ok: true };
       break;
     case "espeak": {
-      if (play) {
+      if (play || fileOnly) {
         ensureOutDir(outDir);
-        audioFile = join(outDir, "circe-espeak.wav");
+        audioFile = join(outDir, `${base("circe-espeak")}.wav`);
         result = await runProcess("espeak-ng", [
           "-v",
           options.voice ?? "en-us",
@@ -87,7 +93,7 @@ export async function speak(text: string, options: TtsOptions = {}): Promise<Tts
     }
     case "edge-tts":
       ensureOutDir(outDir);
-      audioFile = join(outDir, "circe-edge.mp3");
+      audioFile = join(outDir, `${base("circe-edge")}.mp3`);
       result = await runProcess("edge-tts", [
         "--voice",
         options.voice ?? "en-US-AriaNeural",
@@ -99,7 +105,7 @@ export async function speak(text: string, options: TtsOptions = {}): Promise<Tts
       break;
     case "piper":
       ensureOutDir(outDir);
-      audioFile = join(outDir, "circe-piper.wav");
+      audioFile = join(outDir, `${base("circe-piper")}.wav`);
       result = await runProcess(
         "piper",
         ["--model", options.voice ?? "en_US-lessac-medium", "--output_file", audioFile],
@@ -124,4 +130,12 @@ export async function speak(text: string, options: TtsOptions = {}): Promise<Tts
   }
 
   return { ok: result.ok, backend, text, detail: result.detail, played, file: audioFile ?? undefined };
+}
+
+/** Content-type for a synthesized audio file, by extension. */
+export function audioContentType(file: string): string {
+  const f = file.toLowerCase();
+  if (f.endsWith(".mp3")) return "audio/mpeg";
+  if (f.endsWith(".ogg")) return "audio/ogg";
+  return "audio/wav";
 }
