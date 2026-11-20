@@ -13,13 +13,15 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import * as Speech from "expo-speech";
+import Slider from "@react-native-community/slider";
+import { Speaker, SentenceFeed, PhoneVoice, listVoices, pickDefaultVoice } from "./src/voice";
 import { C } from "./src/theme";
 import { parseReply, stripThink, Cue } from "./src/expression";
 import { SYSTEM_PROMPT } from "./src/persona";
 import { chatStream, postJson, sseRequest, StreamHandle } from "./src/net";
 import {
   DEFAULT_SETTINGS,
+  MODEL_CHIPS,
   Msg,
   PRESETS,
   Settings,
@@ -35,12 +37,29 @@ import {
 
 type Tab = "circe" | "settings";
 
+const voiceOf = (s: Settings) => ({ voiceId: s.voiceId, pitch: s.pitch, rate: s.rate, pcVoice: s.pcVoice, pcVoiceName: s.pcVoiceName });
+
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [tab, setTab] = useState<Tab>("circe");
+  const speaker = useRef<Speaker | null>(null);
+  const [voiceNote, setVoiceNote] = useState("");
   useEffect(() => {
-    loadSettings().then(setSettings);
+    loadSettings().then(async (loaded) => {
+      if (loaded.voiceAuto) {
+        const id = pickDefaultVoice(await listVoices());
+        loaded = { ...loaded, voiceId: id || loaded.voiceId, voiceAuto: false };
+        saveSettings(loaded);
+      }
+      setSettings(loaded);
+    });
   }, []);
+  if (settings) {
+    if (!speaker.current) {
+      speaker.current = new Speaker(voiceOf(settings), settings.remoteHost);
+      speaker.current.onNote = setVoiceNote;
+    } else speaker.current.configure(voiceOf(settings), settings.remoteHost);
+  }
   const update = useCallback((patch: Partial<Settings>) => {
     setSettings((s) => {
       const next = { ...(s ?? DEFAULT_SETTINGS), ...patch };
@@ -61,11 +80,16 @@ export default function App() {
         </View>
       </View>
       {tab === "settings" ? (
-        <SettingsScreen s={settings} update={update} />
+        <SettingsScreen s={settings} update={update} speaker={speaker.current!} />
       ) : settings.mode === "remote" ? (
-        <RemoteScreen s={settings} />
+        <RemoteScreen s={settings} speaker={speaker.current!} update={update} />
       ) : (
-        <StandaloneScreen s={settings} />
+        <StandaloneScreen s={settings} speaker={speaker.current!} />
+      )}
+      {!!voiceNote && (
+        <Pressable onPress={() => setVoiceNote("")}>
+          <Text style={[st.hint, { paddingHorizontal: 12 }]}>🔈 {voiceNote} (tap to dismiss)</Text>
+        </Pressable>
       )}
     </SafeAreaView>
   );
@@ -120,7 +144,7 @@ function Composer({ onSend, busy, placeholder }: { onSend: (t: string) => void; 
 
 /* ---------------- Standalone: Circe runs on the phone ---------------- */
 
-function StandaloneScreen({ s }: { s: Settings }) {
+function StandaloneScreen({ s, speaker }: { s: Settings; speaker: Speaker }) {
   const [history, setHistory] = useState<Msg[]>([]);
   const [draft, setDraft] = useState<string | null>(null);
   const [err, setErr] = useState("");
@@ -153,6 +177,8 @@ function StandaloneScreen({ s }: { s: Settings }) {
       ...next.slice(-20).map((m) => ({ role: m.role, content: m.content })),
     ];
     let acc = "";
+    speaker.stop();
+    const sentences = new SentenceFeed((line) => speaker.say(line));
     setDraft("");
     handle.current = chatStream({
       baseUrl: s.baseUrl,
@@ -161,12 +187,15 @@ function StandaloneScreen({ s }: { s: Settings }) {
       messages,
       onToken: (t) => {
         acc += t;
-        setDraft(stripThink(acc));
+        const clean = stripThink(acc);
+        setDraft(clean);
+        if (s.tts) sentences.update(clean);
       },
       onDone: (e) => {
         handle.current = null;
         setDraft(null);
         const reply = stripThink(acc).trim();
+        if (s.tts && !e) sentences.flush(stripThink(acc));
         if (e && !reply) {
           setErr(e);
           return;
@@ -175,10 +204,6 @@ function StandaloneScreen({ s }: { s: Settings }) {
         const done = [...next, { role: "assistant" as const, content: reply, ts: Date.now() }];
         setHistory(done);
         saveHistory(done);
-        if (s.tts) {
-          const { speech } = parseReply(reply);
-          if (speech) Speech.speak(speech, { pitch: 1.1, rate: 1.0 });
-        }
       },
     });
   };
@@ -209,7 +234,7 @@ function StandaloneScreen({ s }: { s: Settings }) {
       <View style={[st.row, { paddingHorizontal: 12 }]}>
         <Pressable
           onPress={() => {
-            Speech.stop();
+            speaker.stop();
             handle.current?.abort();
             setDraft(null);
           }}
@@ -258,7 +283,9 @@ function describe(ev: any): string {
   }
 }
 
-function RemoteScreen({ s }: { s: Settings }) {
+function RemoteScreen({ s, speaker, update }: { s: Settings; speaker: Speaker; update: (p: Partial<Settings>) => void }) {
+  const speakRef = useRef(s.remoteSpeak);
+  speakRef.current = s.remoteSpeak;
   const base = "http://" + s.remoteHost.replace(/^https?:\/\//, "").replace(/\/+$/, "");
   const [status, setStatus] = useState("disconnected");
   const [feed, setFeed] = useState<FeedItem[]>([]);
@@ -283,6 +310,14 @@ function RemoteScreen({ s }: { s: Settings }) {
           const ev = JSON.parse(data);
           if (typeof ev.seq === "number") lastSeq.current = Math.max(lastSeq.current, ev.seq);
           if (ev.type === "expression") setMood(`${ev.mood} · ${ev.expression}`);
+          // Play runtime speech on the phone (only fresh events, not replayed history).
+          if (
+            ev.type === "tts" &&
+            speakRef.current &&
+            typeof ev.text === "string" &&
+            (typeof ev.ts !== "number" || Math.abs(Date.now() - ev.ts) < 20_000)
+          )
+            speaker.say(ev.text);
           setFeed((f) => [{ seq: ev.seq ?? Date.now(), type: ev.type, text: describe(ev) }, ...f].slice(0, 200));
         } catch {
           /* ignore */
@@ -389,6 +424,15 @@ function RemoteScreen({ s }: { s: Settings }) {
       <View style={[st.row, { paddingHorizontal: 12 }]}>
         <Text style={st.hint}>{askMode ? "Ask Circe (/ask)" : "Viewer chat (/chat)"}</Text>
         <Switch value={askMode} onValueChange={setAskMode} thumbColor={askMode ? C.teal : C.dim} />
+        <Text style={st.hint}>🔈 on phone</Text>
+        <Switch
+          value={s.remoteSpeak}
+          onValueChange={(v) => {
+            if (!v) speaker.stop();
+            update({ remoteSpeak: v });
+          }}
+          thumbColor={s.remoteSpeak ? C.teal : C.dim}
+        />
       </View>
       <Composer onSend={send} busy={busy} placeholder="Message Circe on the PC…" />
     </KeyboardAvoidingView>
@@ -397,7 +441,7 @@ function RemoteScreen({ s }: { s: Settings }) {
 
 /* ---------------- Settings ---------------- */
 
-function SettingsScreen({ s, update }: { s: Settings; update: (p: Partial<Settings>) => void }) {
+function SettingsScreen({ s, update, speaker }: { s: Settings; update: (p: Partial<Settings>) => void; speaker: Speaker }) {
   const [key, setKey] = useState("");
   const [keySaved, setKeySaved] = useState(false);
   const [notes, setNotes] = useState<string[]>([]);
@@ -423,7 +467,14 @@ function SettingsScreen({ s, update }: { s: Settings; update: (p: Partial<Settin
         ))}
       </View>
       <Field label="Base URL (OpenAI-compatible)" value={s.baseUrl} onChange={(v) => update({ baseUrl: v.trim() })} />
-      <Field label="Model" value={s.model} onChange={(v) => update({ model: v.trim() })} />
+      <Field key={s.model} label="Model" value={s.model} onChange={(v) => update({ model: v.trim() })} />
+      {!!MODEL_CHIPS[s.preset] && (
+        <View style={[st.row, { flexWrap: "wrap" }]}>
+          {MODEL_CHIPS[s.preset].map((m) => (
+            <Seg key={m} label={m.replace(/:free$/, "").split("/").pop() + " (free)"} on={s.model === m} onPress={() => update({ model: m })} />
+          ))}
+        </View>
+      )}
       <Text style={st.label}>API key for {s.preset} {keySaved ? "(saved securely)" : "(none)"}</Text>
       <View style={st.composer}>
         <TextInput
@@ -450,6 +501,7 @@ function SettingsScreen({ s, update }: { s: Settings; update: (p: Partial<Settin
         <Text style={st.label}>Speak replies (Android TTS)</Text>
         <Switch value={s.tts} onValueChange={(v) => update({ tts: v })} thumbColor={s.tts ? C.teal : C.dim} />
       </View>
+      <VoiceSettings s={s} update={update} speaker={speaker} />
 
       <Text style={st.h2}>Memory notes ({notes.length})</Text>
       {notes.map((n, i) => (
@@ -467,8 +519,84 @@ function SettingsScreen({ s, update }: { s: Settings; update: (p: Partial<Settin
         </View>
       ))}
       <Text style={st.hint}>Add notes from chat with “/remember …”.</Text>
-      <Text style={[st.hint, { marginTop: 24 }]}>Circe-Core mobile v0.1.0</Text>
+      <Text style={[st.hint, { marginTop: 24 }]}>Circe-Core mobile v0.2.0</Text>
     </ScrollView>
+  );
+}
+
+const TEST_LINE = "Hi Anu, it's Circe. Does this voice suit me?";
+
+function VoiceSettings({ s, update, speaker }: { s: Settings; update: (p: Partial<Settings>) => void; speaker: Speaker }) {
+  const [voices, setVoices] = useState<PhoneVoice[]>([]);
+  const [open, setOpen] = useState(false);
+  const [all, setAll] = useState(false);
+  useEffect(() => {
+    listVoices().then(setVoices);
+  }, []);
+  const shown = voices.filter((v) => all || /^en/i.test(v.language));
+  const cur = voices.find((v) => v.identifier === s.voiceId);
+  const test = () => {
+    speaker.stop();
+    speaker.say(TEST_LINE);
+  };
+  return (
+    <View>
+      <Text style={st.h2}>Voice</Text>
+      <View style={[st.row, { justifyContent: "space-between" }]}>
+        <Text style={[st.label, { flex: 1 }]}>
+          Phone voice: <Text style={{ color: C.purple }}>{cur ? `${cur.name || cur.identifier} (${cur.language}${String(cur.quality) === "Enhanced" ? ", HQ" : ""})` : "system default"}</Text>
+        </Text>
+        <Pressable style={st.btnSmall} onPress={() => setOpen(!open)}>
+          <Text style={st.btnText}>{open ? "Done" : "Choose"}</Text>
+        </Pressable>
+      </View>
+      {open && (
+        <View style={st.card}>
+          <View style={[st.row, { justifyContent: "space-between" }]}>
+            <Text style={st.hint}>{shown.length} voices · HQ/network first</Text>
+            <Pressable onPress={() => setAll(!all)}>
+              <Text style={st.link}>{all ? "English only" : "show all languages"}</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={{ maxHeight: 260 }} nestedScrollEnabled>
+            {shown.map((v) => (
+              <Pressable
+                key={v.identifier}
+                onPress={() => {
+                  update({ voiceId: v.identifier });
+                  speaker.stop();
+                  speaker.configure({ voiceId: v.identifier, pitch: s.pitch, rate: s.rate, pcVoice: false, pcVoiceName: "" }, s.remoteHost);
+                  speaker.speakPhone("Hello, I'm Circe.");
+                }}
+              >
+                <Text style={[st.feed, v.identifier === s.voiceId && { color: C.teal }]}>
+                  {v.identifier === s.voiceId ? "● " : "○ "}
+                  {v.identifier} · {v.language}
+                  {String(v.quality) === "Enhanced" ? " · HQ" : ""}
+                  {/network/i.test(v.identifier) ? " · network" : ""}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          <Text style={st.hint}>“network” voices sound best but need internet. Missing voices? Android Settings → Text-to-speech → Google → Install voice data.</Text>
+        </View>
+      )}
+      <Text style={st.label}>Pitch {s.pitch.toFixed(2)}</Text>
+      <Slider minimumValue={0.5} maximumValue={2} step={0.05} value={s.pitch} onSlidingComplete={(v) => update({ pitch: Math.round(v * 100) / 100 })} minimumTrackTintColor={C.teal} thumbTintColor={C.teal} />
+      <Text style={st.label}>Speed {s.rate.toFixed(2)}</Text>
+      <Slider minimumValue={0.5} maximumValue={2} step={0.05} value={s.rate} onSlidingComplete={(v) => update({ rate: Math.round(v * 100) / 100 })} minimumTrackTintColor={C.teal} thumbTintColor={C.teal} />
+      <View style={[st.row, { justifyContent: "space-between", marginVertical: 8 }]}>
+        <Text style={[st.label, { flex: 1 }]}>PC neural voice (uses PC host:port above, POST/GET /tts)</Text>
+        <Switch value={s.pcVoice} onValueChange={(v) => update({ pcVoice: v })} thumbColor={s.pcVoice ? C.teal : C.dim} />
+      </View>
+      {s.pcVoice && (
+        <Field label="PC voice override (blank = runtime default, e.g. en-US-AriaNeural)" value={s.pcVoiceName} onChange={(v) => update({ pcVoiceName: v.trim() })} />
+      )}
+      <Pressable style={[st.btn, { alignSelf: "flex-start", marginVertical: 6 }]} onPress={test}>
+        <Text style={st.btnText}>▶ Test voice</Text>
+      </Pressable>
+      <Text style={st.hint}>Falls back to the phone voice if the PC can't be reached.</Text>
+    </View>
   );
 }
 

@@ -10,6 +10,13 @@ export interface Settings {
   model: string;
   tts: boolean;
   userName: string;
+  voiceId: string; // phone voice identifier ("" = auto-pick on first launch)
+  voiceAuto: boolean; // true until a default has been chosen
+  pitch: number;
+  rate: number;
+  pcVoice: boolean; // speak via the PC runtime's /tts neural voice
+  pcVoiceName: string; // optional override, e.g. en-GB-SoniaNeural
+  remoteSpeak: boolean; // Remote mode: play the runtime's speech on the phone
 }
 export interface Msg {
   role: "user" | "assistant";
@@ -19,9 +26,21 @@ export interface Msg {
 
 export const PRESETS: Record<string, { baseUrl: string; model: string }> = {
   "PC Ollama (LAN)": { baseUrl: "http://192.168.1.10:11434/v1", model: "qwen3:8b" },
-  OpenRouter: { baseUrl: "https://openrouter.ai/api/v1", model: "meta-llama/llama-3.1-8b-instruct" },
+  OpenRouter: { baseUrl: "https://openrouter.ai/api/v1", model: "google/gemma-4-31b-it:free" },
   OpenAI: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
   Groq: { baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.1-8b-instant" },
+};
+
+// Free OpenRouter chat models (ids ending in :free, from /api/v1/models, Nov 2026).
+export const MODEL_CHIPS: Record<string, string[]> = {
+  OpenRouter: [
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "inclusionai/ling-3.2-flash:free",
+    "baidu/ernie-5.5-flash-preview:free",
+  ],
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -31,6 +50,13 @@ export const DEFAULT_SETTINGS: Settings = {
   ...PRESETS["PC Ollama (LAN)"],
   tts: true,
   userName: "Anu",
+  voiceId: "",
+  voiceAuto: true,
+  pitch: 1.05,
+  rate: 1.0,
+  pcVoice: false,
+  pcVoiceName: "",
+  remoteSpeak: false,
 };
 
 const K = { settings: "circe.settings", history: "circe.history", notes: "circe.notes" };

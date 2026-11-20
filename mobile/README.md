@@ -1,4 +1,19 @@
-# Circe-Core Android (v0.1.0)
+# Circe-Core Android (v0.2.0)
+
+## v0.2.0 — voices
+
+- **Settings → Voice**: pick any phone voice (English, HQ/network first), pitch
+  and speed sliders, ▶ Test. A good English female Google voice is auto-picked
+  on first launch when the phone has one.
+- **PC neural voice** (works in Standalone and Remote): start the PC runtime with
+  `CIRCE_HOST=0.0.0.0 CIRCE_TTS=edge-tts CIRCE_TTS_VOICE=en-US-AriaNeural`
+  (see the root README "/tts speech gateway"), set **PC host:port**, turn on
+  **PC neural voice**. Each finished sentence is fetched from `/tts` and played
+  in order; if the PC is unreachable the phone voice is used (retried after 30s).
+- **Remote → 🔈 on phone**: plays the runtime's speech on the phone (add
+  `CIRCE_TTS_PLAY=0` on the PC if you don't want it on the PC speakers too).
+- **OpenRouter preset**: quick-pick chips for free models (`:free`).
+
 
 Expo + React Native companion app with two modes:
 
