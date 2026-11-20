@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Circe-Core",
+    "slug": "circe-core",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0b0714",
+    "android": {
+      "package": "com.tylerlikesps4.circecore",
+      "versionCode": 1,
+      "backgroundColor": "#0b0714"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        { "android": { "usesCleartextTraffic": true } }
+      ]
+    ]
+  }
+}
